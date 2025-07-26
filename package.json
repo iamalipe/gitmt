@@ -1,0 +1,40 @@
+{
+  "name": "gitmt",
+  "version": "1.0.0",
+  "description": "CLI tool to manage multiple git accounts and SSH keys",
+  "main": "bin/gitmt.js",
+  "bin": {
+    "gitmt": "./bin/gitmt.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "git",
+    "cli",
+    "account-management",
+    "git-user",
+    "git-config",
+    "ssh-key",
+    "multiple-accounts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamalipe/gitmt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iamalipe/gitmt/issues"
+  },
+  "homepage": "https://github.com/iamalipe/gitmt#readme",
+  "engines": {
+    "node": ">=14"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "simple-git": "^3.19.0",
+    "@inquirer/prompts": "^3.0.0",
+    "fs-extra": "^11.1.1"
+  },
+  "author": "Abhiseck Bhattacharya <abhiseck@outlook.com>",
+  "license": "MIT"
+}
