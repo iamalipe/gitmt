@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "CLI tool to manage multiple git accounts and SSH keys",
   "main": "bin/gitmt.js",
+  "private": false,
   "bin": {
     "gitmt": "./bin/gitmt.js"
   },
