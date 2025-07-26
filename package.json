@@ -5,7 +5,7 @@
   "main": "bin/gitmt.js",
   "private": false,
   "bin": {
-    "gitmt": "./bin/gitmt.js"
+    "gitmt": "bin/gitmt.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
