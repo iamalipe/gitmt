@@ -19,40 +19,52 @@ if (!existsSync(CONFIG_DIR)) {
 }
 
 // Load or create config
-let config = { users: [], activeUser: null, globalConfig: null };
+let config = { users: [], activeUser: null };
 if (existsSync(CONFIG_FILE)) {
   config = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
 }
+
+// Helper to manage SSH config
+const SSH_CONFIG_FILE = path.join(SSH_DIR, "config");
+
+const updateSSHConfig = (alias, sshKeyPath, isRemove = false) => {
+  let sshConfig = "";
+  if (existsSync(SSH_CONFIG_FILE)) {
+    sshConfig = readFileSync(SSH_CONFIG_FILE, "utf8");
+  }
+
+  if (isRemove) {
+    // Remove existing config block
+    const regex = new RegExp(
+      `\\nHost github.com-${alias}[\\s\\S]*?(?=\\n\\w|$)`,
+      "g"
+    );
+    sshConfig = sshConfig.replace(regex, "");
+  } else {
+    // Add new config block
+    const newConfig = `
+Host github.com-${alias}
+    HostName github.com
+    User git
+    IdentityFile ${sshKeyPath}
+    IdentitiesOnly yes
+`;
+    sshConfig += newConfig;
+  }
+
+  writeFileSync(SSH_CONFIG_FILE, sshConfig.trim() + "\n");
+};
 
 // Save config
 const saveConfig = () => {
   writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 };
 
-// Helper to save current global git config
-const saveGlobalGitConfig = async () => {
-  const git = simpleGit();
-  try {
-    const userName = await git.getConfig("user.name", "global");
-    const userEmail = await git.getConfig("user.email", "global");
-    config.globalConfig = {
-      name: userName.value,
-      email: userEmail.value,
-    };
-    saveConfig();
-  } catch (error) {
-    console.log("No global git config found");
-  }
-};
-
 // Helper to set git config
-const setGitConfig = async (name, email, scope = "global") => {
+const setGitConfig = async (name, email) => {
   const git = simpleGit();
-  if (!config.globalConfig) {
-    await saveGlobalGitConfig();
-  }
-  await git.addConfig("user.name", name, false, scope);
-  await git.addConfig("user.email", email, false, scope);
+  await git.addConfig("user.name", name, false, "global");
+  await git.addConfig("user.email", email, false, "global");
 };
 
 // Commands
@@ -66,11 +78,11 @@ program
   .description("Add a new git user")
   .requiredOption("-n, --name <name>", "Git user name")
   .requiredOption("-e, --email <email>", "Git user email")
-  .option("-l, --local", "Set as local git config")
+  .requiredOption("-a, --alias <alias>", "GitHub alias (used for SSH config)")
   .action(async (options) => {
     const sshKeyPath = path.join(
       SSH_DIR,
-      `id_rsa_gitmt_${options.name.replace(/\s+/g, "_").toLowerCase()}`
+      `id_rsa_gitmt_${options.alias.toLowerCase()}`
     );
 
     // Generate SSH key if it doesn't exist
@@ -86,6 +98,13 @@ program
           `ssh-keygen -t rsa -b 4096 -C "${options.email}" -f "${sshKeyPath}" -N ""`
         );
         console.log(`SSH key generated at: ${sshKeyPath}`);
+        updateSSHConfig(options.alias, sshKeyPath);
+        console.log(
+          `SSH config updated. You can now clone repositories using:`
+        );
+        console.log(
+          `git clone git@github.com-${options.alias}:username/repo.git`
+        );
       }
     }
 
@@ -94,17 +113,16 @@ program
       id: userId,
       name: options.name,
       email: options.email,
+      alias: options.alias,
       sshKeyPath,
     });
 
     if (!config.activeUser) {
       config.activeUser = userId;
-      await setGitConfig(
-        options.name,
-        options.email,
-        options.local ? "local" : "global"
-      );
+      await setGitConfig(options.name, options.email);
     }
+
+    updateSSHConfig(options.name, sshKeyPath);
 
     saveConfig();
     console.log(`Added user ${options.name} (ID: ${userId})`);
@@ -151,12 +169,13 @@ program
       if (removeSSH) {
         try {
           if (existsSync(user.sshKeyPath)) {
-            fs.unlinkSync(user.sshKeyPath); // Remove private key
+            fs.unlinkSync(user.sshKeyPath);
           }
           if (existsSync(`${user.sshKeyPath}.pub`)) {
-            fs.unlinkSync(`${user.sshKeyPath}.pub`); // Remove public key
+            fs.unlinkSync(`${user.sshKeyPath}.pub`);
           }
-          console.log(`SSH keys removed for ${user.name}`);
+          updateSSHConfig(user.alias, "", true); // Remove from SSH config
+          console.log(`SSH keys and config removed for ${user.name}`);
         } catch (error) {
           console.error(`Error removing SSH keys: ${error.message}`);
         }
@@ -168,6 +187,8 @@ program
       config.activeUser = null;
     }
 
+    updateSSHConfig(user.name, user.sshKeyPath, true);
+
     saveConfig();
     console.log(`Removed user ${user.name} (ID: ${userId})`);
   });
@@ -176,7 +197,6 @@ program
   .command("change")
   .description("Switch to a different git user")
   .argument("<id>", "User ID to switch to")
-  .option("-l, --local", "Set as local git config")
   .action(async (id, options) => {
     const userId = parseInt(id);
     const user = config.users.find((u) => u.id === userId);
@@ -187,11 +207,7 @@ program
     }
 
     config.activeUser = userId;
-    await setGitConfig(
-      user.name,
-      user.email,
-      options.local ? "local" : "global"
-    );
+    await setGitConfig(user.name, user.email);
     saveConfig();
     console.log(`Switched to user: ${user.name} <${user.email}>`);
   });
@@ -208,21 +224,13 @@ program
     console.log("Configured git users:");
     config.users.forEach((user) => {
       const activeMarker = user.id === config.activeUser ? "(active)" : "";
-      console.log(`${user.id}. ${user.name} <${user.email}> ${activeMarker}`);
+      console.log(
+        `${user.id}. ${user.name} <${user.email}> [${user.alias}] ${activeMarker}`
+      );
+      console.log(
+        `   Clone URL format: git clone git@github.com-${user.alias}:username/repo.git`
+      );
     });
-  });
-
-program
-  .command("global")
-  .description("Show saved global git config")
-  .action(() => {
-    if (config.globalConfig) {
-      console.log("Saved global git config:");
-      console.log(`Name: ${config.globalConfig.name}`);
-      console.log(`Email: ${config.globalConfig.email}`);
-    } else {
-      console.log("No saved global git config");
-    }
   });
 
 program
@@ -232,6 +240,7 @@ program
   .action((id) => {
     const userId = parseInt(id);
     const user = config.users.find((u) => u.id === userId);
+    // TODO copy the public key to clipboard
 
     if (!user) {
       console.log(`No user found with ID ${userId}`);
