@@ -7,6 +7,10 @@ const path = require("path");
 const simpleGit = require("simple-git");
 const { confirm } = require("@inquirer/prompts");
 const fs = require("fs-extra");
+const clipboardyModule = require("clipboardy");
+const clipboardy = clipboardyModule.default || clipboardyModule;
+const commandExists = require("command-exists");
+const { EOL } = require("os");
 
 // Constants
 const CONFIG_DIR = path.join(homedir(), ".gitmt");
@@ -36,8 +40,8 @@ const updateSSHConfig = (alias, sshKeyPath, isRemove = false) => {
   if (isRemove) {
     // Remove existing config block
     const regex = new RegExp(
-      `\\nHost github.com-${alias}[\\s\\S]*?(?=\\n\\w|$)`,
-      "g"
+      `\\r?\\nHost github.com-${alias}[\\s\\S]*?(?=\\r?\\n\\w|$)`,
+      "g",
     );
     sshConfig = sshConfig.replace(regex, "");
   } else {
@@ -48,7 +52,7 @@ Host github.com-${alias}
     User git
     IdentityFile ${sshKeyPath}
     IdentitiesOnly yes
-`;
+`.replace(/\n/g, EOL);
     sshConfig += newConfig;
   }
 
@@ -82,11 +86,21 @@ program
   .action(async (options) => {
     const sshKeyPath = path.join(
       SSH_DIR,
-      `id_rsa_gitmt_${options.alias.toLowerCase()}`
+      `id_rsa_gitmt_${options.alias.toLowerCase()}`,
     );
 
     // Generate SSH key if it doesn't exist
     if (!existsSync(sshKeyPath)) {
+      // Check if ssh-keygen is available
+      try {
+        await commandExists("ssh-keygen");
+      } catch (err) {
+        console.error(
+          "Error: ssh-keygen is not available. Please install Git or OpenSSH.",
+        );
+        return;
+      }
+
       const generateKey = await confirm({
         message: `Would you like to generate a new SSH key for ${options.name}?`,
         default: true,
@@ -95,15 +109,15 @@ program
       if (generateKey) {
         const { execSync } = require("child_process");
         execSync(
-          `ssh-keygen -t rsa -b 4096 -C "${options.email}" -f "${sshKeyPath}" -N ""`
+          `ssh-keygen -t rsa -b 4096 -C "${options.email}" -f "${sshKeyPath}" -N ""`,
         );
         console.log(`SSH key generated at: ${sshKeyPath}`);
         updateSSHConfig(options.alias, sshKeyPath);
         console.log(
-          `SSH config updated. You can now clone repositories using:`
+          `SSH config updated. You can now clone repositories using:`,
         );
         console.log(
-          `git clone git@github.com-${options.alias}:username/repo.git`
+          `git clone git@github.com-${options.alias}:username/repo.git`,
         );
       }
     }
@@ -139,7 +153,7 @@ program
 
     const user = config.users.find((u) => u.id === config.activeUser);
     console.log(
-      `Current active user: ${user.name} <${user.email}> (ID: ${user.id})`
+      `Current active user: ${user.name} <${user.email}> (ID: ${user.id})`,
     );
   });
 
@@ -225,10 +239,10 @@ program
     config.users.forEach((user) => {
       const activeMarker = user.id === config.activeUser ? "(active)" : "";
       console.log(
-        `${user.id}. ${user.name} <${user.email}> [${user.alias}] ${activeMarker}`
+        `${user.id}. ${user.name} <${user.email}> [${user.alias}] ${activeMarker}`,
       );
       console.log(
-        `   Clone URL format: git clone git@github.com-${user.alias}:username/repo.git`
+        `   Clone URL format: git clone git@github.com-${user.alias}:username/repo.git`,
       );
     });
   });
@@ -237,10 +251,9 @@ program
   .command("key")
   .description("Show public SSH key for a user")
   .argument("<id>", "User ID to show key for")
-  .action((id) => {
+  .action(async (id) => {
     const userId = parseInt(id);
     const user = config.users.find((u) => u.id === userId);
-    // TODO copy the public key to clipboard
 
     if (!user) {
       console.log(`No user found with ID ${userId}`);
@@ -256,6 +269,13 @@ program
     const publicKey = readFileSync(publicKeyPath, "utf8");
     console.log(`Public SSH key for ${user.name}:`);
     console.log(publicKey);
+
+    try {
+      await clipboardy.write(publicKey);
+      console.log("Public key copied to clipboard!");
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error.message);
+    }
   });
 
 program.parse();
