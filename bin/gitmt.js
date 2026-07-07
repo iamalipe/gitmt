@@ -11,6 +11,7 @@ const clipboardyModule = require("clipboardy");
 const clipboardy = clipboardyModule.default || clipboardyModule;
 const commandExists = require("command-exists");
 const { EOL } = require("os");
+const { version } = require("../package.json");
 
 // Constants
 const CONFIG_DIR = path.join(homedir(), ".gitmt");
@@ -108,7 +109,7 @@ const setGitConfig = async (name, email) => {
 program
   .name("gitmt")
   .description("CLI tool to manage multiple git accounts")
-  .version("1.0.0");
+  .version(version);
 
 program
   .command("add")
