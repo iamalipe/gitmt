@@ -5,7 +5,7 @@ const { existsSync, readFileSync, writeFileSync } = require("fs");
 const { homedir } = require("os");
 const path = require("path");
 const simpleGit = require("simple-git");
-const { confirm } = require("@inquirer/prompts");
+const { confirm, input, select } = require("@inquirer/prompts");
 const fs = require("fs-extra");
 const clipboardyModule = require("clipboardy");
 const clipboardy = clipboardyModule.default || clipboardyModule;
@@ -114,13 +114,44 @@ program
 program
   .command("add")
   .description("Add a new git user")
-  .requiredOption("-n, --name <name>", "Git user name")
-  .requiredOption("-e, --email <email>", "Git user email")
-  .requiredOption("-a, --alias <alias>", "GitHub alias (used for SSH config)")
+  .option("-n, --name <name>", "Git user name")
+  .option("-e, --email <email>", "Git user email")
+  .option("-a, --alias <alias>", "GitHub alias (used for SSH config)")
   .action(async (options) => {
+    let name = options.name;
+    let email = options.email;
+    let alias = options.alias;
+
+    if (!name) {
+      name = await input({
+        message: "Enter Git user name:",
+        validate: (value) => value.trim() !== "" || "Name cannot be empty",
+      });
+    }
+    if (!email) {
+      email = await input({
+        message: "Enter Git user email:",
+        validate: (value) => {
+          if (value.trim() === "") return "Email cannot be empty";
+          if (!value.includes("@")) return "Please enter a valid email address";
+          return true;
+        },
+      });
+    }
+    if (!alias) {
+      alias = await input({
+        message: "Enter GitHub alias (used for SSH config):",
+        validate: (value) => {
+          if (value.trim() === "") return "Alias cannot be empty";
+          if (/[^a-zA-Z0-9_-]/.test(value)) return "Alias can only contain alphanumeric characters, hyphens, and underscores";
+          return true;
+        },
+      });
+    }
+
     const sshKeyPath = path.join(
       SSH_DIR,
-      `id_rsa_gitmt_${options.alias.toLowerCase()}`,
+      `id_rsa_gitmt_${alias.toLowerCase()}`,
     );
 
     // Generate SSH key if it doesn't exist
@@ -130,13 +161,13 @@ program
         await commandExists("ssh-keygen");
       } catch (err) {
         console.error(
-          "Error: ssh-keygen is not available. Please install Git or OpenSSH.",
+          "\x1b[31mError: ssh-keygen is not available. Please install Git or OpenSSH.\x1b[0m",
         );
         return;
       }
 
       const generateKey = await confirm({
-        message: `Would you like to generate a new SSH key for ${options.name}?`,
+        message: "Would you like to generate a new SSH key?",
         default: true,
       });
 
@@ -144,15 +175,15 @@ program
         const { spawnSync } = require("child_process");
         const result = spawnSync(
           "ssh-keygen",
-          ["-t", "rsa", "-b", "4096", "-C", options.email, "-f", sshKeyPath, "-N", ""],
+          ["-t", "rsa", "-b", "4096", "-C", email, "-f", sshKeyPath, "-N", ""],
           { stdio: "inherit" }
         );
 
         if (result.status !== 0) {
-          console.error("Error: Failed to generate SSH key.");
+          console.error("\x1b[31mError: Failed to generate SSH key.\x1b[0m");
           return;
         }
-        console.log(`SSH key generated at: ${sshKeyPath}`);
+        console.log(`\x1b[32mSSH key generated at: ${sshKeyPath}\x1b[0m`);
       }
     }
 
@@ -162,33 +193,87 @@ program
 
     config.users.push({
       id: userId,
-      name: options.name,
-      email: options.email,
-      alias: options.alias,
+      name,
+      email,
+      alias,
       sshKeyPath,
     });
 
     if (!config.activeUser) {
       config.activeUser = userId;
-      await setGitConfig(options.name, options.email);
+      await setGitConfig(name, email);
     }
 
     // Configure SSH config block for this alias
-    updateSSHConfig(options.alias, sshKeyPath);
+    updateSSHConfig(alias, sshKeyPath);
 
     saveConfig();
-    console.log(`Added user ${options.name} (ID: ${userId})`);
-    console.log(`SSH config updated for alias [${options.alias}].`);
-    console.log(`You can clone repositories using:`);
-    console.log(`  git clone git@github.com-${options.alias}:username/repo.git`);
+
+    console.log(`\n\x1b[32m\x1b[1m✓ Added user ${name} (ID: ${userId})\x1b[0m`);
+    console.log(`\x1b[32m\x1b[1m✓ SSH config updated for alias [${alias}].\x1b[0m\n`);
+
+    // Public Key processing for Clipboard copying and guide print
+    const publicKeyPath = `${sshKeyPath}.pub`;
+    let pubKeyCopied = false;
+    if (existsSync(publicKeyPath)) {
+      try {
+        const publicKey = readFileSync(publicKeyPath, "utf8");
+        await clipboardy.write(publicKey.trim());
+        pubKeyCopied = true;
+      } catch (err) {
+        // clipboard copy failed
+      }
+    }
+
+    console.log(`\x1b[1m\x1b[35m=== GitHub SSH Setup Guide ===\x1b[0m`);
+    console.log(`\x1b[36m1. Go to GitHub SSH settings page:\x1b[0m`);
+    console.log(`   \x1b[4m\x1b[34mhttps://github.com/settings/keys\x1b[0m`);
+    console.log(`\x1b[36m2. Click on the \x1b[1m'New SSH key'\x1b[0m\x1b[36m button.\x1b[0m`);
+    console.log(`\x1b[36m3. Set a Title (e.g. "gitmt - ${alias}") and paste the key.\x1b[0m`);
+    
+    if (pubKeyCopied) {
+      console.log(`   \x1b[32m(The SSH public key has been copied to your clipboard!)\x1b[0m`);
+    } else {
+      console.log(`   \x1b[33m(Could not copy to clipboard automatically. Run 'gitmt key ${userId}' to view and copy it.)\x1b[0m`);
+    }
+
+    console.log(`\n\x1b[1m\x1b[35m=== How to Clone & Use ===\x1b[0m`);
+    console.log(`\x1b[36mTo clone repositories using this account, use the alias:\x1b[0m`);
+    console.log(`   \x1b[33mgit clone git@github.com-${alias}:username/repo.git\x1b[0m`);
+    console.log(`\x1b[36mTo make this user active for standard Git commands, run:\x1b[0m`);
+    console.log(`   \x1b[33mgitmt change ${userId}\x1b[0m`);
   });
 
 program
   .command("current")
   .description("Show current active git user")
-  .action(() => {
+  .action(async () => {
     if (!config.activeUser) {
       console.log("\x1b[33mNo active git user\x1b[0m");
+      if (config.users.length > 0) {
+        const changeUser = await confirm({
+          message: "Would you like to set an active git user now?",
+          default: true,
+        });
+        if (changeUser) {
+          const choices = config.users.map((u) => ({
+            name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]`,
+            value: u.id.toString(),
+          }));
+          const selectedIdStr = await select({
+            message: "Select a git user to switch to:",
+            choices,
+          });
+          const selectedId = parseInt(selectedIdStr);
+          config.activeUser = selectedId;
+          const user = config.users.find((u) => u.id === selectedId);
+          await setGitConfig(user.name, user.email);
+          saveConfig();
+          console.log(
+            `Switched to active user: \x1b[32m\x1b[1m${user.name}\x1b[0m \x1b[36m<${user.email}>\x1b[0m`
+          );
+        }
+      }
       return;
     }
 
@@ -196,18 +281,70 @@ program
     console.log(
       `Current active user: \x1b[32m\x1b[1m${user.name}\x1b[0m \x1b[36m<${user.email}>\x1b[0m (ID: ${user.id})`,
     );
+
+    const changeUser = await confirm({
+      message: "Would you like to switch to a different active git user?",
+      default: false,
+    });
+
+    if (changeUser) {
+      const choices = config.users.map((u) => {
+        const isActive = u.id === config.activeUser;
+        return {
+          name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+          value: u.id.toString(),
+        };
+      });
+      const selectedIdStr = await select({
+        message: "Select a git user to switch to:",
+        choices,
+      });
+      const selectedId = parseInt(selectedIdStr);
+      if (selectedId === config.activeUser) {
+        console.log(`User ${user.name} is already active.`);
+        return;
+      }
+      config.activeUser = selectedId;
+      const targetUser = config.users.find((u) => u.id === selectedId);
+      await setGitConfig(targetUser.name, targetUser.email);
+      saveConfig();
+      console.log(
+        `Switched to active user: \x1b[32m\x1b[1m${targetUser.name}\x1b[0m \x1b[36m<${targetUser.email}>\x1b[0m`
+      );
+    }
   });
 
 program
   .command("remove")
   .description("Remove a git user")
-  .argument("<id>", "User ID to remove")
+  .argument("[id]", "User ID to remove")
   .action(async (id) => {
-    const userId = parseInt(id);
+    let userId;
+    if (id !== undefined) {
+      userId = parseInt(id);
+    } else {
+      if (config.users.length === 0) {
+        console.log("\x1b[33mNo users configured.\x1b[0m");
+        return;
+      }
+      const choices = config.users.map((u) => {
+        const isActive = u.id === config.activeUser;
+        return {
+          name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+          value: u.id.toString(),
+        };
+      });
+      const selectedIdStr = await select({
+        message: "Select a git user to remove:",
+        choices,
+      });
+      userId = parseInt(selectedIdStr);
+    }
+
     const userIndex = config.users.findIndex((u) => u.id === userId);
 
     if (userIndex === -1) {
-      console.log(`No user found with ID ${userId}`);
+      console.log(`\x1b[31mError: No user found with ID ${userId}\x1b[0m`);
       return;
     }
 
@@ -251,9 +388,30 @@ program
 program
   .command("change")
   .description("Switch to a different git user")
-  .argument("<id>", "User ID to switch to")
+  .argument("[id]", "User ID to switch to")
   .action(async (id) => {
-    const userId = parseInt(id);
+    let userId;
+    if (id !== undefined) {
+      userId = parseInt(id);
+    } else {
+      if (config.users.length === 0) {
+        console.log("\x1b[33mNo users configured. Use 'gitmt add' to add a user.\x1b[0m");
+        return;
+      }
+      const choices = config.users.map((u) => {
+        const isActive = u.id === config.activeUser;
+        return {
+          name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+          value: u.id.toString(),
+        };
+      });
+      const selectedIdStr = await select({
+        message: "Select a git user to switch to:",
+        choices,
+      });
+      userId = parseInt(selectedIdStr);
+    }
+
     const user = config.users.find((u) => u.id === userId);
 
     if (!user) {
@@ -272,7 +430,7 @@ program
 program
   .command("list")
   .description("List all git users")
-  .action(() => {
+  .action(async () => {
     if (config.users.length === 0) {
       console.log("\x1b[33mNo users configured. Use 'gitmt add' to add a user.\x1b[0m");
       return;
@@ -296,14 +454,142 @@ program
         `   \x1b[90mClone URL format: git clone git@github.com-${user.alias}:username/repo.git\x1b[0m`
       );
     });
+
+    const action = await select({
+      message: "Perform an action?",
+      choices: [
+        { name: "Exit menu", value: "exit" },
+        { name: "Switch active user", value: "change" },
+        { name: "Show public SSH key", value: "key" },
+        { name: "Remove a user", value: "remove" },
+      ],
+    });
+
+    if (action === "exit") {
+      return;
+    }
+
+    const choices = config.users.map((u) => {
+      const isActive = u.id === config.activeUser;
+      return {
+        name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+        value: u.id.toString(),
+      };
+    });
+
+    if (action === "change") {
+      const selectedIdStr = await select({
+        message: "Select a git user to switch to:",
+        choices,
+      });
+      const selectedId = parseInt(selectedIdStr);
+      const user = config.users.find((u) => u.id === selectedId);
+      if (!user) return;
+      config.activeUser = selectedId;
+      await setGitConfig(user.name, user.email);
+      saveConfig();
+      console.log(
+        `Switched to active user: \x1b[32m\x1b[1m${user.name}\x1b[0m \x1b[36m<${user.email}>\x1b[0m`
+      );
+    } else if (action === "key") {
+      const selectedIdStr = await select({
+        message: "Select a git user to show/copy SSH key for:",
+        choices,
+      });
+      const selectedId = parseInt(selectedIdStr);
+      const user = config.users.find((u) => u.id === selectedId);
+      if (!user) return;
+      
+      const publicKeyPath = `${user.sshKeyPath}.pub`;
+      if (!existsSync(publicKeyPath)) {
+        console.log(`\x1b[33mNo SSH key found for user ${user.name}\x1b[0m`);
+        return;
+      }
+
+      const publicKey = readFileSync(publicKeyPath, "utf8");
+      console.log(`Public SSH key for \x1b[32m\x1b[1m${user.name}\x1b[0m:`);
+      console.log(`\x1b[90m${publicKey.trim()}\x1b[0m`);
+
+      try {
+        await clipboardy.write(publicKey.trim());
+        console.log("\x1b[32mPublic key copied to clipboard!\x1b[0m");
+      } catch (error) {
+        console.error("\x1b[31mFailed to copy to clipboard:\x1b[0m", error.message);
+      }
+    } else if (action === "remove") {
+      const selectedIdStr = await select({
+        message: "Select a git user to remove:",
+        choices,
+      });
+      const selectedId = parseInt(selectedIdStr);
+      const userIndex = config.users.findIndex((u) => u.id === selectedId);
+      if (userIndex === -1) return;
+
+      const user = config.users[userIndex];
+      const sshKeyExists =
+        existsSync(user.sshKeyPath) || existsSync(`${user.sshKeyPath}.pub`);
+
+      if (sshKeyExists) {
+        const removeSSH = await confirm({
+          message: `Do you want to remove the SSH keys for ${user.name}?`,
+          default: false,
+        });
+
+        if (removeSSH) {
+          try {
+            if (existsSync(user.sshKeyPath)) {
+              fs.unlinkSync(user.sshKeyPath);
+            }
+            if (existsSync(`${user.sshKeyPath}.pub`)) {
+              fs.unlinkSync(`${user.sshKeyPath}.pub`);
+            }
+            console.log(`SSH keys removed for ${user.name}`);
+          } catch (error) {
+            console.error(`Error removing SSH keys: ${error.message}`);
+          }
+        }
+      }
+
+      config.users.splice(userIndex, 1);
+      if (config.activeUser === selectedId) {
+        config.activeUser = null;
+      }
+
+      // Always remove from SSH config to avoid leaving dead host aliases
+      updateSSHConfig(user.alias, "", true);
+
+      saveConfig();
+      console.log(`Removed user ${user.name} (ID: ${selectedId})`);
+    }
   });
 
 program
   .command("key")
   .description("Show public SSH key for a user")
-  .argument("<id>", "User ID to show key for")
+  .argument("[id]", "User ID to show key for")
   .action(async (id) => {
-    const userId = parseInt(id);
+    let userId;
+    if (id !== undefined) {
+      userId = parseInt(id);
+    } else {
+      if (config.users.length === 0) {
+        console.log("\x1b[33mNo users configured.\x1b[0m");
+        return;
+      }
+      const choices = config.users.map((u) => {
+        const isActive = u.id === config.activeUser;
+        return {
+          name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+          value: u.id.toString(),
+        };
+      });
+      const selectedIdStr = await select({
+        message: "Select a git user to show/copy SSH key for:",
+        choices,
+      });
+      userId = parseInt(selectedIdStr);
+    }
+
     const user = config.users.find((u) => u.id === userId);
 
     if (!user) {
@@ -322,7 +608,7 @@ program
     console.log(`\x1b[90m${publicKey.trim()}\x1b[0m`);
 
     try {
-      await clipboardy.write(publicKey);
+      await clipboardy.write(publicKey.trim());
       console.log("\x1b[32mPublic key copied to clipboard!\x1b[0m");
     } catch (error) {
       console.error("\x1b[31mFailed to copy to clipboard:\x1b[0m", error.message);
