@@ -615,4 +615,199 @@ program
     }
   });
 
+program
+  .command("clone")
+  .description("Clone a repository using a specific gitmt user")
+  .argument("[args...]", "git clone arguments")
+  .allowUnknownOption()
+  .action(async (args) => {
+    const cloneIndex = process.argv.indexOf("clone");
+    const cloneArgs = process.argv.slice(cloneIndex + 1);
+
+    let urlIndex = -1;
+    let originalUrl = "";
+
+    // Find the repository URL from arguments
+    for (let i = 0; i < cloneArgs.length; i++) {
+      const arg = cloneArgs[i];
+      if (
+        arg.includes("github.com") ||
+        arg.startsWith("git@") ||
+        arg.startsWith("https://") ||
+        arg.includes("git:")
+      ) {
+        originalUrl = arg;
+        urlIndex = i;
+        break;
+      }
+    }
+
+    if (urlIndex === -1) {
+      for (let i = 0; i < cloneArgs.length; i++) {
+        const arg = cloneArgs[i];
+        if (!arg.startsWith("-")) {
+          originalUrl = arg;
+          urlIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (!originalUrl) {
+      originalUrl = await input({
+        message: "Enter the Git repository URL to clone:",
+        validate: (val) => val.trim() !== "" || "Repository URL cannot be empty",
+      });
+      cloneArgs.push(originalUrl);
+      urlIndex = cloneArgs.length - 1;
+    }
+
+    if (config.users.length === 0) {
+      console.log("\x1b[33mNo users configured. Proceeding with standard git clone...\x1b[0m");
+      const { spawnSync } = require("child_process");
+      spawnSync("git", ["clone", ...cloneArgs], { stdio: "inherit" });
+      return;
+    }
+
+    // Prompt for account/user selection
+    const choices = config.users.map((u) => {
+      const isActive = u.id === config.activeUser;
+      return {
+        name: `${u.id}. ${u.name} <${u.email}> [${u.alias}]${isActive ? " (active)" : ""}`,
+        value: u.id.toString(),
+      };
+    });
+
+    const selectedIdStr = await select({
+      message: "Select a gitmt user/alias to clone this repository with:",
+      choices,
+    });
+    const selectedUser = config.users.find((u) => u.id === parseInt(selectedIdStr));
+
+    let finalUrl = originalUrl;
+
+    // Check if the URL is HTTPS and offer conversion to SSH
+    if (originalUrl.startsWith("https://github.com/")) {
+      const convertToSSH = await confirm({
+        message: "The URL is HTTPS, but SSH is required for gitmt aliases. Convert to SSH?",
+        default: true,
+      });
+      if (convertToSSH) {
+        const pathSuffix = originalUrl.replace("https://github.com/", "");
+        finalUrl = `git@github.com-${selectedUser.alias}:${pathSuffix}`;
+      }
+    } else {
+      // Rewrite GitHub SSH URLs (e.g., git@github.com:owner/repo.git or git@github.com/owner/repo.git)
+      const githubSshRegex = /^(?:ssh:\/\/)?git@github\.com[:\/](.+)$/;
+      const match = originalUrl.match(githubSshRegex);
+      if (match) {
+        const pathSuffix = match[1];
+        if (originalUrl.includes("git@github.com:")) {
+          finalUrl = `git@github.com-${selectedUser.alias}:${pathSuffix}`;
+        } else {
+          finalUrl = `git@github.com-${selectedUser.alias}/${pathSuffix}`;
+        }
+      }
+    }
+
+    cloneArgs[urlIndex] = finalUrl;
+
+    console.log(`\n\x1b[36mCloning using account/alias [${selectedUser.alias}]...\x1b[0m`);
+    console.log(`\x1b[90mRunning: git clone ${cloneArgs.join(" ")}\x1b[0m\n`);
+
+    const { spawnSync } = require("child_process");
+    const result = spawnSync("git", ["clone", ...cloneArgs], { stdio: "inherit" });
+
+    if (result.status === 0) {
+      // Find destination directory to auto-configure local user
+      let destDir = "";
+      const flagsWithValue = new Set([
+        "-b", "--branch",
+        "-o", "--origin",
+        "-u", "--upload-pack",
+        "-c", "--config",
+        "--depth",
+        "--shallow-since",
+        "--shallow-exclude",
+        "--separate-git-dir",
+        "--ref-format",
+        "--server-option",
+        "--filter",
+        "--bundle-uri",
+        "-j", "--jobs",
+        "--template",
+        "--reference",
+        "--reference-if-able"
+      ]);
+
+      for (let i = 0; i < cloneArgs.length; i++) {
+        const arg = cloneArgs[i];
+        if (i === urlIndex) {
+          continue;
+        }
+        if (flagsWithValue.has(arg)) {
+          i++; // Skip the next arg as it's the value
+          continue;
+        }
+        if (arg.startsWith("-")) {
+          // Skip other boolean flags
+          continue;
+        }
+        destDir = arg;
+      }
+
+      if (!destDir) {
+        const repoNameMatch = originalUrl.match(/\/([^\/]+?)(?:\.git)?$/);
+        if (repoNameMatch) {
+          destDir = repoNameMatch[1];
+        }
+      }
+
+      if (destDir && existsSync(destDir)) {
+        try {
+          const localGit = simpleGit(destDir);
+          await localGit.addConfig("user.name", selectedUser.name, false, "local");
+          await localGit.addConfig("user.email", selectedUser.email, false, "local");
+          console.log(
+            `\n\x1b[32m\x1b[1m✓ Configured local Git credentials in ${destDir}:\x1b[0m`
+          );
+          console.log(`  \x1b[36mName:\x1b[0m  ${selectedUser.name}`);
+          console.log(`  \x1b[36mEmail:\x1b[0m ${selectedUser.email}\n`);
+        } catch (err) {
+          console.error(`\x1b[31mWarning: Could not configure local Git credentials: ${err.message}\x1b[0m`);
+        }
+      }
+    } else {
+      process.exit(result.status);
+    }
+  });
+
+program
+  .command("setup-shell")
+  .description("Show instructions to integrate gitmt clone with your shell (git clone interceptor)")
+  .action(() => {
+    console.log(`\n\x1b[1m\x1b[35m=== gitmt Shell Interceptor Setup ===\x1b[0m\n`);
+    console.log(
+      `To automatically intercept standard \x1b[33mgit clone\x1b[0m commands and ask which account to use,\n` +
+      `add the following function to your shell startup configuration file (e.g., \x1b[36m~/.zshrc\x1b[0m or \x1b[36m~/.bashrc\x1b[0m):\n`
+    );
+
+    const integrationScript = 
+`# gitmt git clone interceptor
+git() {
+  if [ "$1" = "clone" ] && [[ "$*" == *"github.com"* ]]; then
+    shift
+    gitmt clone "$@"
+  else
+    command git "$@"
+  fi
+}`;
+
+    console.log(`\x1b[32m${integrationScript}\x1b[0m\n`);
+    console.log(
+      `After adding the script, restart your terminal or run \x1b[33msource ~/.zshrc\x1b[0m (or equivalent).\n` +
+      `Then, running any standard \x1b[33mgit clone git@github.com:...\x1b[0m command will invoke gitmt!\n`
+    );
+  });
+
 program.parse();
