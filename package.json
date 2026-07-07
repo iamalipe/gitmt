@@ -1,6 +1,6 @@
 {
   "name": "gitmt",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "CLI tool to manage multiple git accounts and SSH keys",
   "main": "bin/gitmt.js",
   "private": false,
